@@ -1,0 +1,258 @@
+---
+title: "Discriminant Analysis"
+author: "Jane Pascar"
+output:
+  html_document:
+    df_print: paged
+---
+
+Often experiments will have a bunch of data collected for a priori categorical groups. For example, in an ecological study you may be interested in growth patterns of two species of plant. You can try to visually inspect each plant and assign it to its own species group but if they are very closely related you may be interested if there is a group of measurements that allow you to accurately assign a sample to a species group. Take for example the famous Iris dataset, there are measurements for sepal length/width and petal length/width; this may be enought information to differentiate groups and assign what species that sample belongs to.   
+
+Your first thought might be logistic regression, **however** logistic regression is limited to only two categorical groups!  
+Alternatively, discriminant analysis is a useful statistical approach when you want to know if there is a set of variables that have the predictive power to assign categorical membership when there are more than two options. Two of the most common versions of discriminant analysis are Linear Discriminant Analysis (LDA) and Quadratic Discriminant Analysis (QDA). Broadly speaking, discriminant analysis models work by analyzing the distribution of the predictor variables for each of the categories and then uses Bayesian statistics to assign a probability for each response group given the value of the predictors.  
+
+While LDA and QDA allow more freedom than logistic regression in the number of response categories they are a little more restrictive in some of the assumptions:  
+
+* Predictor variables must come from a normal distribution  
+* Equal covariance among predictor variables for each response level (not as strict for QDA)  
+* number of predictor variables (*p*) must be less than the sample size (*n*) , predictive power actually substantially decreases as *p* approaches *n*. Typically LDA and QDA work best with data where *n* $\ge$ 5 $\times$ *p* 
+
+```{r Load Packages, include=FALSE}
+library(tidyverse) # Transforms data
+library(MASS) # Performs linear and quadratic discriminant analysis
+library(ggpubr) # Makes figures look nicer 
+library(caret) # Useful tools for building predictive models
+library(patchwork) # Merge plots
+library(klaR) # Plot discriminant analysis models
+```
+
+### Example 1. LDA with insect data
+Here we have a dataset for two different species of insect. For each individual, a measurement was taken for the width of the first joint of the tarsus, the width of the second joint of the tarsus, and the width of the aedeagus. The researcher is interested to know if these measurements can be used to determine which species a new sample would belong to. 
+```{r}
+# data from: https://github.com/JedStephens/Handbook-of-Small-Data-Sets/blob/master/INSECT.DAT
+insect <- data.frame(species = rep(c("a", "b"), each = 10),
+                     joint1 = c(191, 185, 200, 173, 171, 160, 188, 186, 174, 163, 
+                                186, 211, 201, 242, 184, 211, 217, 223, 208, 199),
+                     joint2 = c(131, 134, 137, 127, 128, 118, 134, 129, 131, 115, 
+                                107, 122, 144, 131, 108, 118, 122, 127, 125, 124),
+                     aedeagus = c(53, 50, 52, 50, 49, 47, 54, 51, 52, 47, 
+                                  49, 49, 47, 54, 43, 51, 49, 51, 50, 46))
+```
+#### First we need to see if the data meets the assumptions for LDA.  
+1. Check that variables come from a normal distribution
+```{r fig.height=5, fig.width=15}
+# make QQ plots for each predictor variable to confirm normality
+a <- ggqqplot(insect$joint1, title = "Joint 1")
+b <- ggqqplot(insect$joint2, title = "Joint 2")
+c <- ggqqplot(insect$aedeagus, title = "Aedeagus")
+a + b + c
+
+# test normality with the Shapiro-Wilk test
+shapiro.test(insect$joint1)
+shapiro.test(insect$joint2)
+shapiro.test(insect$aedeagus)
+```
+All predictor variables are normally distributed so we have met this assumption for LDA.  
+ 
+2. Test for homogeneity of variance 
+Here I will use Bartlett's test, which is a test to see if samples are populations are homoscedastic. 
+```{r}
+bartlett.test(insect$joint1 ~ insect$species)
+bartlett.test(insect$joint2 ~ insect$species)
+bartlett.test(insect$aedeagus ~ insect$species)
+```
+Based on the p-values, there is no significant differences in the variance or co-variance for the two species so we meet the assumption of equal variance between groups.  
+
+3. Check to make sure that we have enough samples to account for the number of predictors
+```{r}
+is.logical(nrow(insect) >= 5 * 3) # we use 3 becuase that is how many predictors we have
+```
+Since this is true we can move forward in building our LDA model!  
+
+#### Preparing the data for LDA
+Since LDA is essentially a machine learning algorithm we need to split our data up into a training set and a testing set so once our model is built we can check the accuracy. The data that we will use to train includes the known memberships of each group of quantative measurements.
+```{r}
+# Split the data into training (80%) and test set (20%)
+set.seed(123)
+training.samples <- insect$species %>%
+  createDataPartition(p = 0.8, list = FALSE)
+train.data <- insect[training.samples, ]
+test.data <- insect[-training.samples, ]
+```
+Next, we should scale all of our predictor variables since they are not comprable currently.
+```{r}
+# Estimate preprocessing parameters
+preproc.param <- train.data %>% 
+  preProcess(method = c("center", "scale"))
+# Transform the data using the estimated parameters
+train.transformed <- preproc.param %>% predict(train.data)
+test.transformed <- preproc.param %>% predict(test.data)
+```
+Finally, we can build the LDA model
+```{r}
+# Fit the model
+model <- lda(species ~ joint1 + joint2 + aedeagus, data = train.transformed)
+model
+```
+This output is telling us the group means for each of the two species after the values have been scaled and centered.  
+The coefficients of linear discriminants are actually telling us how we would build the formula to discern species given new data, in other words our decision rule. 
+
+> LD1 = 2.695 $\times$ width of joint 1 - 0.697 $\times$ width of joint 2 - 1.579 $\times$ width of aedeagus  
+
+One way to visualize how the LDA model was built is through multiple figures that shows the classification of observations based on the LDA for every combination of two variables. Moreover, the classification borders are displayed and the apparent error rates are given in each title so as you can see some combinations of variable actaully achieve pretty accurate classifications but our combined model of all three variables should produce an even better accuracy. 
+```{r fig.height=5, fig.width=15}
+partimat(species ~ joint1 + joint2 + aedeagus, data = train.transformed, method = "lda")
+```
+
+Here, we visualize the results of the LDA as a histogram of the values of the discriminant function for the samples that are known to be from the different groups. You can see there is pretty good separation between the groups. But we can actually quantify the accuracy of this function... 
+```{r}
+plot(model, type = "b")
+```
+
+To calculate how accurate our LDA function is we first use our test data that we set aside with the predict command.
+```{r}
+prediction <- predict(model, test.transformed)
+prediction$x
+```
+The result is stored under prediction$x and if you view these numbers this is actually how category is assigned. 
+```{r}
+test.transformed$lda <- prediction$class
+table(Species = test.transformed$lda, Species = test.transformed$species)
+```
+As you can see none of our test data was misclassified. 
+```{r}
+# Model accuracy
+mean(prediction$class==test.transformed$species)
+```
+In other words, our model is 100% accurate. 
+
+> It is really important to note that if, for example, you tried to classify a different species "c" with this LDA it would be **incorrectly** coereced into one of our a priori categories. In other words, all possible categories must be included while building your model. 
+
+### Example 2. QDA with microbiome data
+Here we have data on the abundance of five microbial species from mosquitos collected in five countries.  
+```{r message=FALSE, warning=FALSE}
+set.seed(357)
+dat <- data.frame(country = rep(c("Mozambique", "Uganda", "Burkina_Faso", "Cameroon", "Guinea-Bissau"), c(35, 55, 60, 70, 25)),
+                  country.code = rep(c("MZ", "UG", "BF", "CM", "GB"), c(35, 55, 60, 70, 25)),
+                  Plasmodium = c(rnorm(35, 4000, 300), rnorm(55, 4600, 200), 
+                                 rnorm(60, 4300, 150), rnorm(70, 4400, 150), 
+                                 rnorm(25, 4100, 100)),
+                  Pseudomonas = c(rnorm(35, 900, 230), rnorm(55, 570, 240), 
+                                  rnorm(60, 700, 460), rnorm(70, 850, 200), 
+                                  rnorm(25, 1100, 330)),
+                  Enterobacter = c(rnorm(35, 900, 50), rnorm(55, 450, 150), 
+                                   rnorm(60, 550, 320), rnorm(70, 650, 150), 
+                                   rnorm(25, 300, 160)),
+                  Staphylococcus = c(rnorm(35, 420, 130), rnorm(55, 400, 200), 
+                                     rnorm(60, 460, 90), rnorm(70, 350, 150), 
+                                     rnorm(25, 610, 130)),
+                  Asaia = c(rnorm(35, 750, 60), rnorm(55, 490, 100), 
+                            rnorm(60, 300, 90), rnorm(70, 350, 240), 
+                            rnorm(25, 575, 100)))
+  
+dat[dat < 0] <- 0 # change any negative values to 0 because you can't have a negative abundance
+  # going to give error: ‘<’ not meaningful for factors‘<’ not meaningful for factors
+  # but it doesn't matter, it is just saying it is not replacing anything in the columns that are not numeric
+dat[3:7] <- round(dat[3:7], 0) # round the data to whole numbers
+dat$id.code <- sprintf(paste(dat$country.code, "_%3d", sep = ""), seq(1:nrow(dat))) # make a column with a unique ID for each individual
+```
+1. Check that each variable is normally distributed.
+```{r fig.height=10, fig.width=15}
+# make QQ plots for each predictor variable to confirm normality
+a <- ggqqplot(dat$Plasmodium, title = "Plasmodium")
+b <- ggqqplot(dat$Pseudomonas, title = "Pseudomonas")
+c <- ggqqplot(dat$Enterobacter, title = "Enterobacter")
+d <- ggqqplot(dat$Staphylococcus, title = "Staphylococcus")
+e <- ggqqplot(dat$Asaia, title = "Asaia")
+a + b + c + d + e + plot_layout(ncol = 2)
+
+# test normality with the Shapiro-Wilk test
+shapiro.test(dat$Plasmodium)
+shapiro.test(dat$Pseudomonas)
+shapiro.test(dat$Enterobacter)
+shapiro.test(dat$Staphylococcus)
+shapiro.test(dat$Asaia)
+```
+2. Test for homogeneity of variance. 
+```{r}
+bartlett.test(dat$Plasmodium, dat$country.code)
+bartlett.test(dat$Pseudomonas, dat$country.code)
+bartlett.test(dat$Enterobacter, dat$country.code)
+bartlett.test(dat$Staphylococcus, dat$country.code)
+bartlett.test(dat$Asaia, dat$country.code)
+```
+**Unequal variance-covariance matrices!** We must use QDA if we want to continue in the realm of discriminant analysis.
+
+3. Check to make sure that we have enough samples to account for the number of predictors
+```{r}
+is.logical(nrow(dat) >= 5 * 5) # we use 5 becuase that is how many predictors we have
+```
+
+#### Preparing the data for QDA
+Same as for LDA, we will partition our data to a training and testing set. 
+```{r}
+# Split the data into training (80%) and test set (20%)
+set.seed(123)
+training.samples <- dat$country.code %>%
+  createDataPartition(p = 0.8, list = FALSE)
+train.data <- dat[training.samples, ]
+test.data <- dat[-training.samples, ]
+```
+We will scale and center all of our data. 
+```{r}
+# Estimate preprocessing parameters
+preproc.param <- train.data %>% 
+  preProcess(method = c("center", "scale"))
+# Transform the data using the estimated parameters
+train.transformed <- preproc.param %>% predict(train.data)
+test.transformed <- preproc.param %>% predict(test.data)
+```
+Finally, we can build the QDA model
+```{r}
+# Fit the model
+model <- qda(country.code ~ Plasmodium + Pseudomonas + Enterobacter + Staphylococcus + Asaia, data = train.transformed)
+model
+```
+
+Similar to before if we visualize partition plots for decision rules for each pair of variables you can see that no pair alone is really great at identifying country of origin, all have error rates of 29-42%.
+```{r fig.width=15, fig.height=15}
+partimat(country.code ~ Plasmodium + Pseudomonas + Enterobacter + Staphylococcus + Asaia, data = train.transformed, method = "qda")
+```
+
+This table shows how all of our test data was categorized according to our QDA function. You can see that there are some that have incorrectly identified.
+```{r}
+prediction <- predict(model, test.transformed)
+table(Predicted = prediction$class, Country = test.transformed$country.code)
+```
+
+The below figure visualized how the test data has been classified using the QDA model. Correctly identified individuals have been colored in black and incorrect in red. 
+```{r fig.width=10, fig.height=5, fig.align="center"}
+gdat <- data.frame(class = prediction$class, post = prediction$posterior[,2])
+gdat$id <- rownames(gdat)
+test.transformed$id <- rownames(test.transformed)
+gdat2 <- merge(gdat, test.transformed, by = "id", all.y = F)
+gdat2$Prediction <- (ifelse(gdat2$class==gdat2$country.code, "Correct", "Incorrect"))
+ggplot(data = gdat2, aes(x = post, y = country, color = Prediction)) +
+  geom_point(size = 3, alpha = .6) +
+  theme_classic() +
+  scale_color_manual(values = c("black", "red")) +
+  labs(x = "Posterior", y = "Country") +
+  NULL
+```
+
+We can quantify how accurate our model is:
+```{r}
+# Model accuracy
+mean(prediction$class==test.transformed$country.code)
+```
+75% accurate is pretty good!
+
+#### Helpful Resources:
+##### Specific to R: 
+[MASS package manual](https://cran.r-project.org/web/packages/MASS/MASS.pdf)  
+[example with code](https://rstudio-pubs-static.s3.amazonaws.com/35817_2552e05f1d4e4db8ba87b334101a43da.html)  
+[another example with code](https://www.r-bloggers.com/computing-and-visualizing-lda-in-r/)  
+
+##### In general: 
+[LDA](http://www.music.mcgill.ca/~ich/classes/mumt611_07/classifiers/lda_theory.pdf)  
+[LDA & QDA](https://www.researchgate.net/publication/308015273_Linear_vs_quadratic_discriminant_analysis_classifier_a_tutorial)  
